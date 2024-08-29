@@ -44,6 +44,7 @@ const userSchema = mongoose.Schema(
         message: "Please provide a valid mobile number",
       },
     },
+    passwordChangedAt: Date,
     passwordResetOtp: String,
     passwordResetExpires: Date,
   },
@@ -57,6 +58,12 @@ userSchema.pre("save", async function (next) {
   }
 
   this.passwordConfirm = undefined;
+});
+
+//TO Change password
+userSchema.pre("save", function (next) {
+  if (!this.isModified("password") || this.isNew) return next();
+  this.passwordChangedAt = Date.now() - 1000;
   next();
 });
 
@@ -68,8 +75,19 @@ userSchema.methods.correctPassword = async function (
   return await bcrypt.compare(candidatePassword, userPassword);
 };
 
+userSchema.methods.changePasswordAfter = function (JWTTimestamp) {
+  if (this.passwordChangedAt) {
+    const changedTImestamp = parseInt(
+      this.passwordChangedAt.getTime() / 1000,
+      10
+    );
+    // return true if the time the token was issued is less than the time the password was created or changed
+    return JWTTimestamp < changedTImestamp;
+  }
+  return false;
+};
 //password reset token
-userSchema.methods.createPasswordResetToken = async function () {
+userSchema.methods.createPasswordResetToken = function () {
   const resetToken = crypto.randomBytes(32).toString("hex");
 
   this.passwordResetToken = crypto
