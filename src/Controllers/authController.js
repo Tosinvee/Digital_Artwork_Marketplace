@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const AppError = require("../Utils/appError");
 const { sendResetOtp } = require("../Utils/email");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
 const signToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -31,6 +32,7 @@ const createSendToken = (user, statusCode, res) => {
 
   res.status(statusCode).json({
     status: "success",
+    message,
     token,
     data: {
       user,
@@ -53,20 +55,20 @@ const login = catchAsync(async (req, res, next) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return next(
-      new AppError("Please provide a valid email amd password!", 400)
+      new AppError("Please provide a valid email amd password!"),
+      400
     );
   }
 
   const user = await User.findOne({ email }).select("+password");
   if (!user || !(await user.correctPassword(password, user.password))) {
-    return next(new AppError("Incorrect email or password", 401));
+    return next(new AppError("Incorrect email or password"), 401);
   }
   createSendToken(user, 200, res);
 });
 
 const protect = catchAsync(async (req, res, next) => {
   let token;
-
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
@@ -100,78 +102,79 @@ const protect = catchAsync(async (req, res, next) => {
   next();
 });
 
-const generateOtp = () => {
-  return Math.floor(10000 + Math.random() * 90000).toString();
-};
-
 const forgotPassword = catchAsync(async (req, res, next) => {
   const user = await User.findOne({ email: req.body.email });
   if (!user) {
     return next(new AppError("No user with the email address", 404));
   }
-  const otp = generateOtp();
-  user.passwordResetOtp = otp;
-  user.passwordResetExpires = Date.now() + 10 * 60 * 1000;
+  const resetOtp = user.createPasswordResetOtp();
   await user.save({ validateBeforeSave: false });
+  try {
+    sendResetOtp(user.email, resetOtp);
 
-  sendResetOtp(user.email, otp);
+    res.status(200).json({
+      status: "success",
+      message: "OTP sent to email",
+    });
+  } catch (error) {
+    user.passwordResetOtp = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save({ validateBeforeSave: false });
 
-  res.status(200).json({
-    status: "success",
-    message: "OTP sent to email",
-  });
+    return next(
+      new AppError("There was an error ending the email. Try again later!"),
+      500
+    );
+  }
 });
 
 const verifyOtp = catchAsync(async (req, res, next) => {
-  const { email, otp } = req.body;
+  const otp = req.body.otp;
 
-  if (!email || !otp) {
-    return next(new AppError("please provide the OTP", 400));
+  if (!otp) {
+    return next(new AppError("OTP is missing or invalid", 400));
   }
-  const user = await User.findOne({ email });
-  console.log(user);
+
+  console.log("Received OTP:", otp);
+
+  const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
+
+  const user = await User.findOne({
+    passwordResetOtp: hashedOtp,
+    passwordResetExpires: { $gt: Date.now() },
+  });
+
   if (!user) {
-    return next(new AppError("User not found", 404));
+    return next(new AppError("Token is invalid or has expired", 400));
   }
 
-  if (
-    !user ||
-    user.passwordResetOtp !== otp ||
-    user.passwordResetExpires < Date.now()
-  ) {
-    return next(new AppError("Invalid OTP or OTP has expired", 400));
-  }
-  // Clear OTP and expiration after successful verification
   user.passwordResetOtp = undefined;
   user.passwordResetExpires = undefined;
   await user.save({ validateBeforeSave: false });
 
-  res.status(200).json({
-    status: "success",
-    message: "OTP verified. You can now reset your password.",
-  });
+  createSendToken(200, res, "OTP verified. You can now reset your password.");
 });
 
 const resetPassword = catchAsync(async (req, res, next) => {
   const { password, passwordConfirm } = req.body;
 
+  if (!password || !passwordConfirm) {
+    return next(new AppError("Please provide all required fields", 400));
+  }
+
   if (password !== passwordConfirm) {
-    return res
-      .status(400)
-      .json({ status: "error", message: "Passwords do not match" });
+    return next(new AppError("passwords do not match ", 400));
   }
 
-  // Since the `protect` middleware was run before this, the user info will be available on `req.user`
   const user = req.user;
+  user.password = password;
+  user.passwordConfirm = req.body.passwordConfirm;
+  await user.save();
 
-  if (!user) {
-    return res.status(404).json({ status: "error", message: "User not found" });
-  }
-
-  user.password = await bcrypt.hash(password, 12); // Encrypt the new password
-  await user.save({ validateBeforeSave: false });
-
-  createSendToken(user, 200, res);
+  res.status(200).json({
+    status: "success",
+    message: "Password has been reset successfully",
+  });
 });
 
 module.exports = {
