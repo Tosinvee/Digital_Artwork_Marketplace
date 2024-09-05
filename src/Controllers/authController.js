@@ -7,14 +7,14 @@ const { sendResetOtp } = require("../Utils/email");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 
-const signToken = (id) => {
+const signToken = (id, expiresIn) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN,
+    expiresIn: expiresIn || process.env.JWT_EXPIRES_IN,
   });
 };
 
-const createSendToken = (user, statusCode, res) => {
-  const token = signToken(user._id);
+const createSendToken = (user, statusCode, res, message, expiresIn) => {
+  const token = signToken(user._id, expiresIn);
 
   const expiresInDays = Number(process.env.JWT_COOKIES_EXPIRES_IN) || 7; // Default to 7 days if not set
 
@@ -152,7 +152,13 @@ const verifyOtp = catchAsync(async (req, res, next) => {
   user.passwordResetExpires = undefined;
   await user.save({ validateBeforeSave: false });
 
-  createSendToken(200, res, "OTP verified. You can now reset your password.");
+  createSendToken(
+    user,
+    200,
+    res,
+    "OTP verified. You can now reset your password.",
+    "10m"
+  );
 });
 
 const resetPassword = catchAsync(async (req, res, next) => {
@@ -171,10 +177,7 @@ const resetPassword = catchAsync(async (req, res, next) => {
   user.passwordConfirm = req.body.passwordConfirm;
   await user.save();
 
-  res.status(200).json({
-    status: "success",
-    message: "Password has been reset successfully",
-  });
+  createSendToken(user, 200, res, "password reset sucessfully");
 });
 
 module.exports = {
